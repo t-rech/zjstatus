@@ -152,7 +152,11 @@ impl Widget for CommandWidget {
         }
 
         let command = commandline_parser(&command_config.click_action);
-        let context: BTreeMap<String, String> = BTreeMap::new();
+
+        // fire-and-forget: click action results are of no use and must not be
+        // processed — see the RunCommandResult handler
+        let mut context: BTreeMap<String, String> = BTreeMap::new();
+        context.insert("fire_and_forget".to_owned(), "true".to_owned());
 
         tracing::debug!("Running command {:?} {:?}", command, context);
 
@@ -378,7 +382,7 @@ fn release(name: &str, state: ZellijState) {
     }
 }
 
-fn commandline_parser(input: &str) -> Vec<String> {
+pub fn commandline_parser(input: &str) -> Vec<String> {
     let mut output: Vec<String> = Vec::new();
 
     let special_chars = ['"', '\''];

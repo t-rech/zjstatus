@@ -235,6 +235,14 @@ impl State {
                     context = ?context
                 );
 
+                // results of fire-and-forget commands (click actions) must not
+                // touch any state: they cannot be rendered anyway, and dropping
+                // them early keeps the handler safe on runtimes where command
+                // result processing is fragile (zellij 0.44.x WASMI, #247)
+                if context.contains_key("fire_and_forget") {
+                    return false;
+                }
+
                 self.state.cache_mask = UpdateEventMask::Command as u8;
 
                 if let Some(name) = context.get("name") {
