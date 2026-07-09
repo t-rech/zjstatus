@@ -2,8 +2,12 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::BTreeMap;
 
+#[cfg(all(not(feature = "bench"), not(test)))]
+use zellij_tile::shim::run_command;
+
 use crate::render::{FormattedPart, formatted_parts_from_string_cached};
 
+use super::command::commandline_parser;
 use super::widget::Widget;
 
 lazy_static! {
@@ -26,6 +30,7 @@ pub struct PipeWidget {
 struct PipeConfig {
     format: Vec<FormattedPart>,
     render_mode: RenderMode,
+    click_action: String,
 }
 
 impl PipeWidget {
@@ -85,7 +90,36 @@ impl Widget for PipeWidget {
         }
     }
 
-    fn process_click(&self, _name: &str, _state: &crate::config::ZellijState, _pos: usize) {}
+    fn process_click(&self, name: &str, _state: &crate::config::ZellijState, _pos: usize) {
+        let pipe_config = match self.config.get(name) {
+            Some(pc) => pc,
+            None => {
+                return;
+            }
+        };
+
+        if pipe_config.click_action.is_empty() {
+            return;
+        }
+
+        let command = commandline_parser(&pipe_config.click_action);
+
+        // fire-and-forget: click action results are of no use and must not be
+        // processed — see the RunCommandResult handler
+        let mut context: BTreeMap<String, String> = BTreeMap::new();
+        context.insert("fire_and_forget".to_owned(), "true".to_owned());
+
+        tracing::debug!("Running pipe click command {:?} {:?}", command, context);
+
+        #[cfg(all(not(feature = "bench"), not(test)))]
+        run_command(
+            &command.iter().map(|x| x.as_str()).collect::<Vec<&str>>(),
+            context,
+        );
+
+        #[cfg(any(feature = "bench", test))]
+        let _ = (command, context);
+    }
 }
 
 fn render_dynamic_formatted_content(content: &str, config: &BTreeMap<String, String>) -> String {
@@ -111,6 +145,7 @@ fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, PipeConf
         let mut pipe_conf = PipeConfig {
             format: vec![],
             render_mode: RenderMode::Static,
+            click_action: "".to_owned(),
         };
 
         if let Some(existing_conf) = config.get(pipe_name.as_str()) {
@@ -120,6 +155,10 @@ fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, PipeConf
         if key.ends_with("format") {
             pipe_conf.format =
                 FormattedPart::multiple_from_format_string(zj_conf.get(&key).unwrap(), zj_conf);
+        }
+
+        if key.ends_with("clickaction") {
+            pipe_conf.click_action = zj_conf.get(&key).unwrap().to_owned();
         }
 
         if key.ends_with("rendermode") {
