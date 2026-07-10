@@ -18,6 +18,9 @@ pub struct ZellijState {
     pub pipe_results: BTreeMap<String, String>,
     pub mode: ModeInfo,
     pub panes: PaneManifest,
+    /// own pane id (plugin id space), resolved once at load — lets widgets
+    /// locate the tab this instance lives in without host calls at render time
+    pub plugin_pane_id: Option<u32>,
     pub plugin_uuid: String,
     pub tabs: Vec<TabInfo>,
     pub sessions: Vec<SessionInfo>,

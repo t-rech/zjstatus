@@ -94,6 +94,7 @@ impl ZellijPlugin for State {
             pipe_results: BTreeMap::new(),
             mode: ModeInfo::default(),
             panes: PaneManifest::default(),
+            plugin_pane_id: Some(get_plugin_ids().plugin_id),
             plugin_uuid: uid.to_string(),
             tabs: Vec::new(),
             sessions: Vec::new(),

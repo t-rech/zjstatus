@@ -31,6 +31,7 @@ struct PipeConfig {
     format: Vec<FormattedPart>,
     render_mode: RenderMode,
     click_action: String,
+    tab_scoped: bool,
 }
 
 impl PipeWidget {
@@ -52,13 +53,25 @@ impl Widget for PipeWidget {
             }
         };
 
-        let pipe_result = match state.pipe_results.get(name) {
+        let raw_result = match state.pipe_results.get(name) {
             Some(pr) => pr,
             None => {
                 tracing::debug!("pipe no content {name}");
                 return "".to_owned();
             }
         };
+
+        // tab-scoped pipes carry one record per tab, separated by the ASCII
+        // unit separator (0x1f): "<0-based tab position>|<content>". Each
+        // plugin instance renders only the record of the tab it lives in.
+        let pipe_result = &match pipe_config.tab_scoped {
+            true => select_tab_record(raw_result, state),
+            false => raw_result.to_owned(),
+        };
+
+        if pipe_config.tab_scoped && pipe_result.is_empty() {
+            return "".to_owned();
+        }
 
         let content = pipe_config
             .format
@@ -130,6 +143,39 @@ fn render_dynamic_formatted_content(content: &str, config: &BTreeMap<String, Str
         .join("")
 }
 
+/// Picks the record addressed to the tab this plugin instance lives in from a
+/// tab-scoped payload. Records are separated by the ASCII unit separator
+/// (0x1f) and formatted as "<0-based tab position>|<content>". Returns an
+/// empty string when the own pane cannot be located or no record matches.
+fn select_tab_record(payload: &str, state: &crate::config::ZellijState) -> String {
+    let own_id = match state.plugin_pane_id {
+        Some(id) => id,
+        None => return "".to_owned(),
+    };
+
+    let own_tab = state.panes.panes.iter().find_map(|(pos, panes)| {
+        panes
+            .iter()
+            .any(|p| p.is_plugin && p.id == own_id)
+            .then_some(*pos)
+    });
+
+    let own_tab = match own_tab {
+        Some(pos) => pos,
+        None => return "".to_owned(),
+    };
+
+    for record in payload.split('\u{1f}') {
+        if let Some((pos, content)) = record.split_once('|') {
+            if pos.parse::<usize>() == Ok(own_tab) {
+                return content.to_owned();
+            }
+        }
+    }
+
+    "".to_owned()
+}
+
 fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, PipeConfig> {
     let mut keys: Vec<String> = zj_conf
         .keys()
@@ -146,6 +192,7 @@ fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, PipeConf
             format: vec![],
             render_mode: RenderMode::Static,
             click_action: "".to_owned(),
+            tab_scoped: false,
         };
 
         if let Some(existing_conf) = config.get(pipe_name.as_str()) {
@@ -159,6 +206,10 @@ fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, PipeConf
 
         if key.ends_with("clickaction") {
             pipe_conf.click_action = zj_conf.get(&key).unwrap().to_owned();
+        }
+
+        if key.ends_with("tabscoped") {
+            pipe_conf.tab_scoped = matches!(zj_conf.get(&key).map(|v| v.as_str()), Some("true"));
         }
 
         if key.ends_with("rendermode") {
@@ -176,4 +227,51 @@ fn parse_config(zj_conf: &BTreeMap<String, String>) -> BTreeMap<String, PipeConf
         config.insert(pipe_name, pipe_conf);
     }
     config
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::config::ZellijState;
+    use zellij_tile::prelude::{PaneInfo, PaneManifest};
+
+    fn state_with_plugin_in_tab(tab: usize, plugin_id: u32) -> ZellijState {
+        let plugin_pane = PaneInfo {
+            id: plugin_id,
+            is_plugin: true,
+            ..PaneInfo::default()
+        };
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(tab, vec![plugin_pane]);
+
+        ZellijState {
+            plugin_pane_id: Some(plugin_id),
+            panes: PaneManifest { panes },
+            ..ZellijState::default()
+        }
+    }
+
+    #[test]
+    fn test_select_tab_record() {
+        let payload = "0|zero\u{1f}1|one\u{1f}2|two";
+
+        let state = state_with_plugin_in_tab(1, 7);
+        assert_eq!(select_tab_record(payload, &state), "one");
+
+        let state = state_with_plugin_in_tab(2, 7);
+        assert_eq!(select_tab_record(payload, &state), "two");
+
+        // no record for the own tab
+        let state = state_with_plugin_in_tab(5, 7);
+        assert_eq!(select_tab_record(payload, &state), "");
+
+        // own pane unknown
+        let mut state = state_with_plugin_in_tab(1, 7);
+        state.plugin_pane_id = None;
+        assert_eq!(select_tab_record(payload, &state), "");
+
+        // content may contain further pipes.. only the first one splits
+        let state = state_with_plugin_in_tab(0, 7);
+        assert_eq!(select_tab_record("0|a|b", &state), "a|b");
+    }
 }
